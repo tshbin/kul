@@ -83,88 +83,40 @@ def align_lmks(lmk1, lmk2):
 ######################## END OF Global Procrustes analysis #######################
 
 ########################## Build adaptive state model ############################
-class ASM(object):
-    """Class representing an active shape model.
 
-    Attributes:
-        mean_shape (Landmarks): The mean shape of this model.
-        pc_modes (np.ndarray(n,p)): A numpy (n,p) array representing the PC modes
-            with p the number of modes an n/2 the number of shape points.
+def get_pca(mean_lmk, lmks):
+    # covariance calculation
+    tmp_mat = []
+    for ditem in lmks:
+        tmp_mat.append(flatten_special(ditem))
 
-    """
+    lmks_as_matrix = np.array(tmp_mat)
 
+    covmat = np.cov(lmks_as_matrix, rowvar=False)
 
-    def __init__(self, mean_lmk, lmks):
-        """Build an active shape model from the landmarks given.
+    # PCA on shapes
+    eigvals, eigvecs = np.linalg.eigh(covmat)
+    idx = np.argsort(-eigvals)
+    eigvals = eigvals[idx]
+    eigvecs = eigvecs[:, idx]
 
-        Args:
-            landmarks (Landmarks): The landmark points from which the ASM is learned.
+    variance_explained = np.cumsum(eigvals / np.sum(eigvals))
 
-        """
+    # Build modes for up to 98% variance
+    def index_of_true(arr):
+        for index, item in enumerate(arr):
+            if item:
+                return index, item
 
-        # Do Generalized Procrustes analysis
-        mu, Xnew = mean_lmk, lmks
-        print(len(Xnew))
-        # covariance calculation
-        tmp_mat = []
-        for ditem in lmks:
-            tmp_mat.append(flatten_special(ditem))
+    npcs, _ = index_of_true(variance_explained > 0.98)
+    npcs += 1
 
-        lmks_as_matrix = np.array(tmp_mat)
-
-        covmat = np.cov(lmks_as_matrix, rowvar=False)
-
-        # self.k = len(mu)      # Number of points
-        # self.mean_shape = mu
-        # self.covariance = S
-        # self.aligned_shapes = Xnew
-
-        # PCA on shapes
-        eigvals, eigvecs = np.linalg.eigh(covmat)
-        idx = np.argsort(-eigvals)
-        eigvals = eigvals[idx]
-        eigvecs = eigvecs[:, idx]
-
-        self.scores = np.dot(lmks_as_matrix, eigvecs)
-        self.mean_scores = np.dot(flatten_special(mu), eigvecs)
-        self.variance_explained = np.cumsum(eigvals/np.sum(eigvals))
-
-        # Build modes for up to 98% variance
-        def index_of_true(arr):
-            for index, item in enumerate(arr):
-                if item:
-                    return index, item
-        npcs, _ = index_of_true(self.variance_explained > 0.98)
-        npcs += 1
-
-        M = []
-        #print('npcs: {}'.format(npcs))
-        for i in range(0, npcs-1):
-            M.append(np.sqrt(eigvals[i]) * eigvecs[:, i])
-        self.pc_modes = np.array(M).squeeze().T
-
-################################# iteration of ASM #############
-
-# def normal_to_one_point(lmks, pidx):
-#     gradient is normal to the tangible line at that point
-#     line eq = x(y2-y1) - y(x2-x1) + C = 0
-#     gradient = (y2-y1, -x2 -x1)
-#     #
-#     print(len(lmks) - 1)
-#     if pidx == 0:  # first point forward derivatives
-#         print('forward')
-#         x = lmks[1][0] - lmks[0][0]
-#         y = lmks[1][1] - lmks[0][1]
-#     elif pidx == len(lmks) - 1:  # last point, backward derivatives
-#         print('backward')
-#         x = lmks[-1][0] - lmks[-2][0]
-#         y = lmks[-1][1] - lmks[-2][1]
-#     else: # central derivatives
-#         x = lmks[pidx + 1][0] - lmks[pidx - 1][0]
-#         y = lmks[pidx + 1][1] - lmks[pidx - 1][1]
-#     mag = math.sqrt(x ** 2 + y ** 2)
-#
-#     return -y / mag, x / mag
+    M = []
+    # print('npcs: {}'.format(npcs))
+    for i in range(0, npcs - 1):
+        M.append(np.sqrt(eigvals[i]) * eigvecs[:, i])
+    pc_modes = np.array(M).squeeze().T
+    return pc_modes
 
 
 def normal_to_one_point(lmks, pidx):
@@ -267,16 +219,16 @@ def find_fits(lmk, img, gimg, mean_covariances, m, k):
     return fits
 
 
-def fit_one(estimate, image_to_run_on, gimage_to_run_on, m, asm, mean_covariances, k):
+def fit_one(estimate, image_to_run_on, gimage_to_run_on, m, pc_modes, mean_covariances, k):
 
-    b = np.zeros(asm.pc_modes.shape[1])
+    b = np.zeros(pc_modes.shape[1])
     total_s = 1
     total_theta = 0
     X = estimate
     for _ in range(30):
         Y = find_fits(X, image_to_run_on, gimage_to_run_on, mean_covariances, m, k)
         Y = np.asarray(Y)
-        b, t, s, theta = update_parameters(X, Y, asm)
+        b, t, s, theta = update_parameters(X, Y, pc_modes)
         b = np.clip(b, -3, 3)
         s = np.clip(s, 0.95, 1.05)
         if total_s * s > 1.20 or total_s * s < 0.8:
@@ -288,7 +240,7 @@ def fit_one(estimate, image_to_run_on, gimage_to_run_on, m, asm, mean_covariance
         total_theta += theta
         X_prev = X
 
-        X = unflatten_special(flatten_special(X) + np.dot(asm.pc_modes, b))
+        X = unflatten_special(flatten_special(X) + np.dot(pc_modes, b))
         X = transform(X, t, s, theta)
 
         #draw_lmks_on_original([X_prev, X], image_to_run_on, title='MyTest')
@@ -305,12 +257,12 @@ def transform(X, t, s, theta):
     tt = tt + t
     return tt
 
-def update_parameters(X, Y, asm):
-    b = np.zeros(asm.pc_modes.shape[1])
-    b_prev = np.ones(asm.pc_modes.shape[1])
+def update_parameters(X, Y, pc_modes):
+    b = np.zeros(pc_modes.shape[1])
+    b_prev = np.ones(pc_modes.shape[1])
     i = 0
     while (np.mean(np.abs(b - b_prev)) >= 1e-14):
-        x = unflatten_special(flatten_special(X) + np.dot(asm.pc_modes, b))
+        x = unflatten_special(flatten_special(X) + np.dot(pc_modes, b))
         t, s, theta = align_params(x, Y)
         #print('Ybig: {}\n------------'.format(Y))
         # print('---------------------\nt: {}'.format(t))
@@ -322,7 +274,7 @@ def update_parameters(X, Y, asm):
         # sys.exit(0)
         y1 = unflatten_special(flatten_special(y)/np.dot(flatten_special(y), flatten_special(X).T))
         b_prev = b
-        b = np.dot(asm.pc_modes.T, (flatten_special(y1) - flatten_special(X)))
+        b = np.dot(pc_modes.T, (flatten_special(y1) - flatten_special(X)))
         #print('current b: {}'.format(b))
     return b, t, s, theta
 
@@ -350,11 +302,11 @@ def main(tooth_number, rg_to_predict_on):
         mean_covariances.append(build_greyscale_model(images, gimages, lmks, i, 10))
 
     mean, lmks_gpa = gpa(lmks)
-    asm = ASM(mean, lmks_gpa)
+    pc_modes = get_pca(mean, lmks_gpa)
     #noise = [[random.randint(-10,10), random.randint(-10,10)] for _ in range(40)]
     test_estimate = stupid_init(test_lmk)
 
-    Z = fit_one(test_estimate, test_img, test_gimg, 15, asm, mean_covariances, 10)
+    Z = fit_one(test_estimate, test_img, test_gimg, 15, pc_modes, mean_covariances, 10)
     draw_lmks_on_original([test_estimate, Z], test_img, [[0,0,255], [0,255,0]])
 
 
