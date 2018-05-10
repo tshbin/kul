@@ -1,5 +1,6 @@
 from drawme import draw_lmks_on_original
 from utils import *
+from drawme import  fit_to_screen
 import math
 from scipy import linspace
 import random
@@ -108,7 +109,7 @@ def get_pca(mean_lmk, lmks):
             if item:
                 return index, item
 
-    npcs, _ = index_of_true(variance_explained > 0.98)
+    npcs, _ = index_of_true(variance_explained > 0.99)
     npcs += 1
 
     M = []
@@ -136,19 +137,36 @@ def normal_to_one_point(lmks, pidx):
 
 def create_grayscaleimage(img):
     """CLAHE filter first, then blur and then sobel to get grayscale gradient image
-
+    https://docs.opencv.org/2.4/doc/tutorials/imgproc/imgtrans/sobel_derivatives/sobel_derivatives.html
+    https://docs.opencv.org/3.1.0/d4/d13/tutorial_py_filtering.html
     :param img:
     :return:
     """
-    i = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    clahef = cv2.createCLAHE(2.0, (32,32))
-    i = clahef.apply(i)
-    i = cv2.GaussianBlur(i, (3, 3), 0)
+    # i = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # clahef = cv2.createCLAHE(2.0, (32,32))
+    # i = clahef.apply(i)
+    i = cv2.GaussianBlur(img, (3, 3), 0)
     sobelx = cv2.Sobel(i, cv2.CV_64F, 1, 0, ksize=3)
     sobely = cv2.Sobel(i, cv2.CV_64F, 0, 1, ksize=3)
     abs_grad_x = cv2.convertScaleAbs(sobelx)
     abs_grad_y = cv2.convertScaleAbs(sobely)
     return cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
+
+
+def enhance_image(img):
+    """
+    https://docs.opencv.org/3.1.0/d4/d13/tutorial_py_filtering.html
+
+    :param img:
+    :return:
+    """
+    i = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    i = cv2.medianBlur(i, 5)
+    i = cv2.bilateralFilter(i, 9, 75, 75)
+    clahef = cv2.createCLAHE(2.0, (32,32))
+    i = clahef.apply(i)
+    return i
+
 
 
 def get_points_along_normal(img, gradient_img, point, normal, k):
@@ -185,13 +203,14 @@ def build_greyscale_model(imgs, gimgs, lmks, pointidx, k):
         _, smpl = sample_along_normal(imgs[did], gimgs[did], tpoint, tnormal, k)
         samples.append(smpl)
     tmatrix = np.array(samples)
-    mean = np.mean(tmatrix, axis=0)
-    covariance = np.cov(tmatrix, rowvar=False)
+    mean = (np.mean(tmatrix, axis=0))
+    covariance = (np.cov(tmatrix, rowvar=False))
 
     return mean, covariance
 
 def fit_quality(mean, covariance, samples):
     return (samples - mean).T.dot(covariance).dot(samples - mean)
+
 
 def find_fits(lmk, img, gimg, mean_covariances, m, k):
     bests = []
@@ -201,12 +220,21 @@ def find_fits(lmk, img, gimg, mean_covariances, m, k):
         tnormal = normal_to_one_point(lmk, did)
         tpoint = lmk[did, :]
         tpoints , tsamples = sample_along_normal(img, gimg, tpoint, tnormal, m)
+        # print('tsamples: {}'.format(tsamples))
+        # print('tpoints: {}'.format(tpoints))
+        #sys.exit(0)
+
+        # max_value = max(tsamples)
+        # max_index = tsamples.index(max_value)
+        # bests.append(max_index)
+        # points.append(tpoints)
+
         dmin, best = np.inf, None
         dists = []
         for i in range(k, k + 2 * (m - k) + 1):
             subprofile = tsamples[i - k:i + k + 1]
 
-            tmean, tcov = mean_covariances[i]
+            tmean, tcov = mean_covariances[did]
             dist = fit_quality(tmean, tcov, subprofile)
             dists.append(dist)
             if dist < dmin:
@@ -214,20 +242,23 @@ def find_fits(lmk, img, gimg, mean_covariances, m, k):
                 best = i
         bests.append(best)
         points.append(tpoints)
-    for did in range(len(bests)):
+    for did in range(len(points)):
         fits.append([int(x) for x in points[did][bests[did], :]])
     return fits
 
 
+
+
+
 def fit_one(estimate, image_to_run_on, gimage_to_run_on, m, pc_modes, mean_covariances, k):
 
-    b = np.zeros(pc_modes.shape[1])
     total_s = 1
     total_theta = 0
     X = estimate
-    for _ in range(30):
+    for _ in range(50):
         Y = find_fits(X, image_to_run_on, gimage_to_run_on, mean_covariances, m, k)
         Y = np.asarray(Y)
+        #draw_lmks_on_original([X, Y], image_to_run_on, [[0,0,255], [0,255,0]])
         b, t, s, theta = update_parameters(X, Y, pc_modes)
         b = np.clip(b, -3, 3)
         s = np.clip(s, 0.95, 1.05)
@@ -238,8 +269,7 @@ def fit_one(estimate, image_to_run_on, gimage_to_run_on, m, pc_modes, mean_covar
         if total_theta + theta > math.pi / 4 or total_theta + theta < - math.pi / 4:
             theta = 0
         total_theta += theta
-        X_prev = X
-
+        #print(theta)
         X = unflatten_special(flatten_special(X) + np.dot(pc_modes, b))
         X = transform(X, t, s, theta)
 
@@ -265,33 +295,34 @@ def update_parameters(X, Y, pc_modes):
         x = unflatten_special(flatten_special(X) + np.dot(pc_modes, b))
         t, s, theta = align_params(x, Y)
         #print('Ybig: {}\n------------'.format(Y))
-        # print('---------------------\nt: {}'.format(t))
-        # print('s: {}'.format(t))
-        # print('thera: {}'.format(theta))
-        # print('Ybig: {}'.format(Y))
         y = inverse_transform(Y, t, s, theta)
-        # print('ysmall: {}\n----------------------------'.format(y))
-        # sys.exit(0)
         y1 = unflatten_special(flatten_special(y)/np.dot(flatten_special(y), flatten_special(X).T))
         b_prev = b
         b = np.dot(pc_modes.T, (flatten_special(y1) - flatten_special(X)))
-        #print('current b: {}'.format(b))
+
     return b, t, s, theta
 
 
 def stupid_init(lmk):
     noise = [[random.randint(-5,+5), random.randint(-5,+5)] for _ in range(40)]
+    #noise = [[-5, -5] for _ in range(40)]
     test_estimate = lmk + np.array(noise)
     return test_estimate
-def main(tooth_number, rg_to_predict_on):
-    dataset = read_dataset(tooth_number)
+def main(tooth_number, rg_to_predict_on, lmk_location='../Landmarks/original/', rg_location='../Radiographs/'):
+    m = 30
+    k = 10
+    dataset = read_dataset(tooth_number, lmk_location, rg_location)
     images = [x['image'] for x in dataset if x['rg'] != rg_to_predict_on]
-    gimages = [create_grayscaleimage(img) for img in images]
+
+    enhanced_images = [enhance_image(img) for img in images]
+    gimages = [create_grayscaleimage(img) for img in enhanced_images]
 
     for item in dataset:
         if item['rg'] == rg_to_predict_on:
             test_lmk = item['lmk']
             test_img = item['image']
+            original_test_image = test_img.copy()
+            test_image = enhance_image(test_img)
             test_gimg = create_grayscaleimage(test_img)
             break
 
@@ -299,20 +330,32 @@ def main(tooth_number, rg_to_predict_on):
     lmks = [x['lmk'] for x in dataset if x['rg'] != rg_to_predict_on]
     mean_covariances = []
     for i in range(40):
-        mean_covariances.append(build_greyscale_model(images, gimages, lmks, i, 10))
+        mean_covariances.append(build_greyscale_model(images, gimages, lmks, i, k))
 
     mean, lmks_gpa = gpa(lmks)
     pc_modes = get_pca(mean, lmks_gpa)
-    #noise = [[random.randint(-10,10), random.randint(-10,10)] for _ in range(40)]
     test_estimate = stupid_init(test_lmk)
 
-    Z = fit_one(test_estimate, test_img, test_gimg, 15, pc_modes, mean_covariances, 10)
-    draw_lmks_on_original([test_estimate, Z], test_img, [[0,0,255], [0,255,0]])
+    Z = fit_one(test_estimate, test_image, test_gimg, m, pc_modes, mean_covariances, k)
+    draw_lmks_on_original([test_estimate, Z], original_test_image, [[0,0,255], [0,255,0]])
+
 
 
 if __name__ == '__main__':
+
     parser = argparse.ArgumentParser()
     parser.add_argument('-t', '--tooth', help='tooth number to predict', required=True, type=int)
     parser.add_argument('-r', '--rg', help='Radigraph to predict on', required=True, type=int)
+    parser.add_argument('-g', '--rglocation', help='location of radigraphs', default='', type=str)
+    parser.add_argument('-l', '--lmlocation', help='location of landmarks', default='', type=str)
     args = parser.parse_args()
-    main(args.tooth, args.rg)
+
+    if len(args.rglocation) > 0 and len(args.lmlocation)>0:
+        main(args.tooth, args.rg, lmk_location=args.lmlocation, rg_location=args.rglocation)
+    elif len(args.rglocation) > 0:
+        main(args.tooth, args.rg, rg_location=args.rglocation)
+    elif len(args.lmlocation) > 0:
+        main(args.tooth, args.rg, lmk_location=args.lmlocation)
+    else:
+        main(args.tooth, args.rg)
+

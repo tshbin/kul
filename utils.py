@@ -35,7 +35,7 @@ def read_landmarks(tooth, rg_to_skip=None, lmks_dir='../Landmarks/original'):
     return landmarks_list
 
 
-def read_dataset(tooth, lmk_location='../Landmarks/original/', rg_location='../Radiographs/'):
+def read_dataset(tooth, lmk_location, rg_location):
     print('reading dataset,')
     rgfs = glob(rg_location + '*.tif')
     all_avialble_rgfs = [int(os.path.basename(x).split('.', 1)[0]) for x in rgfs]
