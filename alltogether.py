@@ -5,6 +5,7 @@ import math
 from scipy import linspace
 import random
 import argparse
+import matplotlib.pyplot as plt
 ######################## Global Procrustes analysis #######################
 def gpa(lmks, margin_error = 1e-10):
     """
@@ -127,6 +128,8 @@ def normal_to_one_point(lmks, pidx):
 
 
     tpoint = lmks[pidx, :]
+    #print('lmks: {}'.format(lmks))
+    #print('tpoint: {}'.format(tpoint))
     p_prev = lmks[(pidx - 1) % 40 , :]
     p_next = lmks[(pidx + 1) % 40, :]
     n1 = np.array([p_prev[1] - tpoint[1], tpoint[0] - p_prev[0]])
@@ -168,10 +171,57 @@ def enhance_image(img):
     return i
 
 
+def create_pyramids_and_stuff(images, levels, lmks, k):
+    """Create a gaussian pyramid of a given image.
+
+    Args:
+        image: The source image.
+        levels (int): The number of pyramid levels.
+
+    Returns:
+        A list of images, the original image as first and the most scaled down one
+        as last.
+
+    """
+    pyramids = []
+    for image in images:
+        layers = []
+        layers.append(image)
+        tmp_image = image
+        for _ in range(0, levels):
+            tmp_image = cv2.pyrDown(tmp_image)
+            layers.append(tmp_image)
+        pyramids.append(layers)
+    lmks_per_pyramid = [[dlmk.dot(1/2**i) for i in range(levels+1)] for dlmk in lmks]
+
+
+    mean_covariances = []
+
+    for did1 in range(levels + 1):
+        enhaced_images = [enhance_image(img) for img in list(zip(*pyramids))[did1]]
+        gimages = [create_grayscaleimage(img) for img in enhaced_images]
+        tlmks = list(zip(*lmks_per_pyramid))[did1]
+        dmean_covariances = []
+
+        #print('tlmks: {}'.format(tlmks.shape))
+        for did2 in range(40):
+
+            dmean_covariances.append(build_greyscale_model(enhaced_images, gimages, tlmks, did2, k))
+
+        mean_covariances.append(dmean_covariances)
+
+
+    return pyramids, lmks_per_pyramid, mean_covariances
+
+
+
 
 def get_points_along_normal(img, gradient_img, point, normal, k):
+    #print('point: {}'.format(point))
     a = point
     b = point + normal * k
+    # print('a: {}'.format(a))
+    # print('b: {}'.format(b))
     coordinates = (a[:, None] * linspace(1, 0, k + 1) +
                    b[:, None] * linspace(0, 1, k + 1))
     values = img[coordinates[1].astype(np.int), coordinates[0].astype(np.int)]
@@ -216,10 +266,14 @@ def find_fits(lmk, img, gimg, mean_covariances, m, k):
     bests = []
     fits = []
     points = []
+    number_in_50 = 0
     for did in range(len(lmk)):
         tnormal = normal_to_one_point(lmk, did)
         tpoint = lmk[did, :]
         tpoints , tsamples = sample_along_normal(img, gimg, tpoint, tnormal, m)
+        # print('tsamples: {}'.format(len(tsamples)))
+        # print('m: {}'.format(m))
+
         # print('tsamples: {}'.format(tsamples))
         # print('tpoints: {}'.format(tpoints))
         #sys.exit(0)
@@ -242,9 +296,17 @@ def find_fits(lmk, img, gimg, mean_covariances, m, k):
                 best = i
         bests.append(best)
         points.append(tpoints)
+        if 3/4 * m < best < 5/4 * m:
+            number_in_50 += 1
+    # print('bests: {}'.format(bests))
+    # print('len tsamples: {}'.format(len(tsamples)))
+    # print('len bests: {}'.format(len(bests)))
+    # print('m: {}'.format(m))
+    # print('number_in_50: {}'.format(number_in_50))
+    ratio_in_50 = number_in_50/len(bests)
     for did in range(len(points)):
         fits.append([int(x) for x in points[did][bests[did], :]])
-    return fits
+    return fits, ratio_in_50
 
 
 
@@ -256,7 +318,10 @@ def fit_one(estimate, image_to_run_on, gimage_to_run_on, m, pc_modes, mean_covar
     total_theta = 0
     X = estimate
     for _ in range(50):
-        Y = find_fits(X, image_to_run_on, gimage_to_run_on, mean_covariances, m, k)
+        Y, ratio_in_50 = find_fits(X, image_to_run_on, gimage_to_run_on, mean_covariances, m, k)
+        print('current iteration/ratio: {}/{}'.format(_, ratio_in_50))
+        if ratio_in_50 >= 0.65:
+            break
         Y = np.asarray(Y)
         #draw_lmks_on_original([X, Y], image_to_run_on, [[0,0,255], [0,255,0]])
         b, t, s, theta = update_parameters(X, Y, pc_modes)
@@ -273,7 +338,7 @@ def fit_one(estimate, image_to_run_on, gimage_to_run_on, m, pc_modes, mean_covar
         X = unflatten_special(flatten_special(X) + np.dot(pc_modes, b))
         X = transform(X, t, s, theta)
 
-        #draw_lmks_on_original([X_prev, X], image_to_run_on, title='MyTest')
+        draw_lmks_on_original([X], image_to_run_on, [[255,255,255]])
     return X
 def inverse_transform(X, t, s, theta):
     tt = X - t
@@ -304,41 +369,96 @@ def update_parameters(X, Y, pc_modes):
 
 
 def stupid_init(lmk):
-    noise = [[random.randint(-5,+5), random.randint(-5,+5)] for _ in range(40)]
-    #noise = [[-5, -5] for _ in range(40)]
+    #noise = [[random.randint(-10,+10), random.randint(-10,+10)] for _ in range(40)]
+    noise = [[-10, +10] for _ in range(40)]
     test_estimate = lmk + np.array(noise)
     return test_estimate
-def main(tooth_number, rg_to_predict_on, lmk_location='../Landmarks/original/', rg_location='../Radiographs/'):
-    m = 30
+# def main(tooth_number, rg_to_predict_on, lmk_location='../Landmarks/original/', rg_location='../Radiographs/'):
+#     m = 30
+#     k = 10
+#     dataset = read_dataset(tooth_number, lmk_location, rg_location)
+#     images = [x['image'] for x in dataset if x['rg'] != rg_to_predict_on]
+#
+#     enhanced_images = [enhance_image(img) for img in images]
+#     gimages = [create_grayscaleimage(img) for img in enhanced_images]
+#
+#     for item in dataset:
+#         if item['rg'] == rg_to_predict_on:
+#             test_lmk = item['lmk']
+#             test_img = item['image']
+#             original_test_image = test_img.copy()
+#             test_image = enhance_image(test_img)
+#             test_gimg = create_grayscaleimage(test_img)
+#             break
+#
+#
+#     lmks = [x['lmk'] for x in dataset if x['rg'] != rg_to_predict_on]
+#     mean_covariances = []
+#     for i in range(40):
+#         mean_covariances.append(build_greyscale_model(images, gimages, lmks, i, k))
+#
+#     mean, lmks_gpa = gpa(lmks)
+#     pc_modes = get_pca(mean, lmks_gpa)
+#     test_estimate = stupid_init(test_lmk)
+#
+#     Z = fit_one(test_estimate, test_image, test_gimg, m, pc_modes, mean_covariances, k)
+#     draw_lmks_on_original([test_estimate, Z], original_test_image, [[0,0,255], [0,255,0]])
+
+def main(tooth_number, rg_to_predict_on, lmk_location='../Landmarks/original/', rg_location='../Radiographs/', number_pyramids=2):
+    m = 15
     k = 10
     dataset = read_dataset(tooth_number, lmk_location, rg_location)
     images = [x['image'] for x in dataset if x['rg'] != rg_to_predict_on]
-
-    enhanced_images = [enhance_image(img) for img in images]
-    gimages = [create_grayscaleimage(img) for img in enhanced_images]
-
     for item in dataset:
         if item['rg'] == rg_to_predict_on:
             test_lmk = item['lmk']
             test_img = item['image']
             original_test_image = test_img.copy()
-            test_image = enhance_image(test_img)
-            test_gimg = create_grayscaleimage(test_img)
             break
-
-
     lmks = [x['lmk'] for x in dataset if x['rg'] != rg_to_predict_on]
-    mean_covariances = []
-    for i in range(40):
-        mean_covariances.append(build_greyscale_model(images, gimages, lmks, i, k))
-
     mean, lmks_gpa = gpa(lmks)
     pc_modes = get_pca(mean, lmks_gpa)
     test_estimate = stupid_init(test_lmk)
+    a, b, mean_covariances = create_pyramids_and_stuff(images, number_pyramids, lmks, k)
 
-    Z = fit_one(test_estimate, test_image, test_gimg, m, pc_modes, mean_covariances, k)
-    draw_lmks_on_original([test_estimate, Z], original_test_image, [[0,0,255], [0,255,0]])
+    Z = fit_pyramid(test_estimate, test_img, m, mean_covariances, pc_modes, k, number_pyramids=number_pyramids)
+    draw_lmks_on_original([test_estimate, Z], original_test_image, [[0, 0, 255], [0, 255, 0]])
 
+
+
+def fit_pyramid(estimate, image, m, mean_covariances, pc_modes, k, number_pyramids=3):
+    pyramid = create_pyramid(image, number_pyramids)
+    #print('pyramid: {}'.format(pyramid[1].shape))
+    # print('estimate: {}'.format(estimate))
+    lmk_pyramid = estimate.dot(1/2 ** (number_pyramids + 1))
+    # print('lmk_pyramid: {}'.format(lmk_pyramid))
+    print('len mean_covariances: {}'.format(len(mean_covariances)))
+    print('len pyramid: {}'.format(len(pyramid)))
+    for img, mean_cov in zip(reversed(pyramid), reversed(mean_covariances)):
+        print('running one fit')
+        # plt.imshow(img)
+        # plt.show()
+        # sys.exit(0)
+        gimg = enhance_image(img)
+        gimg = create_grayscaleimage(gimg)
+        # print(lmk_pyramid)
+        # draw_lmks_on_original([lmk_pyramid], img, [[255,255,255]])
+        # sys.exit(0)
+        lmk_pyramid = lmk_pyramid.dot(2)
+        # print(lmk_pyramid)
+        # sys.exit(0)
+        lmk_pyramid = fit_one(lmk_pyramid, img, gimg, m, pc_modes, mean_cov, k)
+    return lmk_pyramid
+
+
+def create_pyramid(image, levels):
+    output = []
+    output.append(image)
+    tmp = image
+    for _ in range(0, levels):
+        tmp = cv2.pyrDown(tmp)
+        output.append(tmp)
+    return output
 
 
 if __name__ == '__main__':
