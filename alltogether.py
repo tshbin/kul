@@ -5,6 +5,7 @@ import math
 from scipy import linspace
 import random
 import argparse
+from scipy.ndimage import morphology
 import matplotlib.pyplot as plt
 ######################## Global Procrustes analysis #######################
 def gpa(lmks, margin_error = 1e-10):
@@ -166,6 +167,10 @@ def enhance_image(img):
     i = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     i = cv2.medianBlur(i, 5)
     i = cv2.bilateralFilter(i, 9, 75, 75)
+    i_top_hat = morphology.white_tophat(i, size=400)
+    i_bot_hat = morphology.black_tophat(img, size=80)
+    i = cv2.add(i, i_top_hat)
+    i = cv2.subtract(i, i_bot_hat)
     clahef = cv2.createCLAHE(2.0, (32,32))
     i = clahef.apply(i)
     return i
