@@ -1,11 +1,12 @@
 from drawme import draw_lmks_on_original
 from utils import *
-from drawme import  fit_to_screen
 import math
 from scipy import linspace
-import random
 import argparse
-import matplotlib.pyplot as plt
+from scipy.ndimage import morphology
+import csv
+from autoinit import scale_mask_back
+
 ######################## Global Procrustes analysis #######################
 def gpa(lmks, margin_error = 1e-10):
     """
@@ -87,6 +88,13 @@ def align_lmks(lmk1, lmk2):
 ########################## Build adaptive state model ############################
 
 def get_pca(mean_lmk, lmks):
+    """basically from ASM we need only 2 things, mean and PC vectors.
+
+
+    :param mean_lmk:
+    :param lmks:
+    :return:
+    """
     # covariance calculation
     tmp_mat = []
     for ditem in lmks:
@@ -317,11 +325,11 @@ def fit_one(estimate, image_to_run_on, gimage_to_run_on, m, pc_modes, mean_covar
     total_s = 1
     total_theta = 0
     X = estimate
+    best_X = None
+    best_ratio = -np.inf
     for _ in range(50):
         Y, ratio_in_50 = find_fits(X, image_to_run_on, gimage_to_run_on, mean_covariances, m, k)
         print('current iteration/ratio: {}/{}'.format(_, ratio_in_50))
-        if ratio_in_50 >= 0.65:
-            break
         Y = np.asarray(Y)
         #draw_lmks_on_original([X, Y], image_to_run_on, [[0,0,255], [0,255,0]])
         b, t, s, theta = update_parameters(X, Y, pc_modes)
@@ -330,16 +338,21 @@ def fit_one(estimate, image_to_run_on, gimage_to_run_on, m, pc_modes, mean_covar
         if total_s * s > 1.20 or total_s * s < 0.8:
             s = 1
         total_s *= s
-        theta = np.clip(theta, -math.pi / 8, math.pi / 8)
-        if total_theta + theta > math.pi / 4 or total_theta + theta < - math.pi / 4:
+        theta = np.clip(theta, -math.pi / 30, math.pi / 30)
+        if total_theta + theta > math.pi / 8 or total_theta + theta < - math.pi / 8:
             theta = 0
         total_theta += theta
         #print(theta)
         X = unflatten_special(flatten_special(X) + np.dot(pc_modes, b))
         X = transform(X, t, s, theta)
+        if ratio_in_50 >= 0.6:
+            return X
+        if ratio_in_50 > best_ratio:
+            best_ratio = ratio_in_50
+            best_X = X
+        #draw_lmks_on_original([X], image_to_run_on, [[255,255,255]])
+    return best_X
 
-        draw_lmks_on_original([X], image_to_run_on, [[255,255,255]])
-    return X
 def inverse_transform(X, t, s, theta):
     tt = X - t
     tt = scale_by_param(tt, 1/s)
@@ -368,47 +381,40 @@ def update_parameters(X, Y, pc_modes):
     return b, t, s, theta
 
 
-def stupid_init(lmk):
-    #noise = [[random.randint(-10,+10), random.randint(-10,+10)] for _ in range(40)]
-    noise = [[-10, +10] for _ in range(40)]
-    test_estimate = lmk + np.array(noise)
-    return test_estimate
-# def main(tooth_number, rg_to_predict_on, lmk_location='../Landmarks/original/', rg_location='../Radiographs/'):
-#     m = 30
-#     k = 10
-#     dataset = read_dataset(tooth_number, lmk_location, rg_location)
-#     images = [x['image'] for x in dataset if x['rg'] != rg_to_predict_on]
-#
-#     enhanced_images = [enhance_image(img) for img in images]
-#     gimages = [create_grayscaleimage(img) for img in enhanced_images]
-#
-#     for item in dataset:
-#         if item['rg'] == rg_to_predict_on:
-#             test_lmk = item['lmk']
-#             test_img = item['image']
-#             original_test_image = test_img.copy()
-#             test_image = enhance_image(test_img)
-#             test_gimg = create_grayscaleimage(test_img)
-#             break
-#
-#
-#     lmks = [x['lmk'] for x in dataset if x['rg'] != rg_to_predict_on]
-#     mean_covariances = []
-#     for i in range(40):
-#         mean_covariances.append(build_greyscale_model(images, gimages, lmks, i, k))
-#
-#     mean, lmks_gpa = gpa(lmks)
-#     pc_modes = get_pca(mean, lmks_gpa)
-#     test_estimate = stupid_init(test_lmk)
-#
-#     Z = fit_one(test_estimate, test_image, test_gimg, m, pc_modes, mean_covariances, k)
-#     draw_lmks_on_original([test_estimate, Z], original_test_image, [[0,0,255], [0,255,0]])
+# def stupid_init(lmk):
+#     #noise = [[random.randint(-10,+10), random.randint(-10,+10)] for _ in range(40)]
+#     noise = [[-10, +10] for _ in range(40)]
+#     test_estimate = lmk + np.array(noise)
+#     return test_estimate
 
-def main(tooth_number, rg_to_predict_on, lmk_location='../Landmarks/original/', rg_location='../Radiographs/', number_pyramids=2):
-    m = 15
-    k = 10
+def stupid_init(toothN, rg):
+    #noise = [[random.randint(-10,+10), random.randint(-10,+10)] for _ in range(40)]
+    #noise = [[-10, +10] for _ in range(40)]
+    #test_estimate = lmk + np.array(noise)
+    rgstr = str(rg)
+    if len(rgstr) == 2:
+        pass
+    else:
+        rgstr = '0' + rgstr
+    mskfile = './predicted/predicted_mask{}.tif.tif'.format(rgstr)
+    origorig = './Radiographs/{}.tif'.format(rgstr)
+    du, dl = scale_mask_back(mskfile, origorig, rg)
+    inilmks = du + dl
+    # with open('initial_lmks_{}.cpkl'.format(rgstr), 'rb') as fr:
+    #     inilmks = pickle.load(fr)
+    test_estimate = inilmks[toothN - 1]
+    return test_estimate[0][0], test_estimate[0][1], test_estimate[1], test_estimate[3], test_estimate[2], test_estimate[-1]
+
+
+def main(tooth_number, rg_to_predict_on, lmk_location='./Landmarks/original/', rg_location='./Radiographs/', number_pyramids=1):
+    # m = 40
+    # k = 30
+    m = 30
+    k = 20
     dataset = read_dataset(tooth_number, lmk_location, rg_location)
     images = [x['image'] for x in dataset if x['rg'] != rg_to_predict_on]
+
+
     for item in dataset:
         if item['rg'] == rg_to_predict_on:
             test_lmk = item['lmk']
@@ -418,35 +424,58 @@ def main(tooth_number, rg_to_predict_on, lmk_location='../Landmarks/original/', 
     lmks = [x['lmk'] for x in dataset if x['rg'] != rg_to_predict_on]
     mean, lmks_gpa = gpa(lmks)
     pc_modes = get_pca(mean, lmks_gpa)
-    test_estimate = stupid_init(test_lmk)
+    cx, cy, h, angle , dcnt, w = stupid_init(tooth_number, rg_to_predict_on)
+    sparam = h / (mean[:, 1].max() - mean[:, 1].min())
+    mean_scaled = scale_by_param(mean, sparam)
+    mean_moved = move_by_vec(mean_scaled, np.array([cx, cy]))
+
+    if angle is not None:
+        mean_moved_cnt = np.expand_dims(mean_moved, axis=1).astype(int)
+        rect = cv2.minAreaRect(mean_moved_cnt)
+        mean_angle = rect[2]
+        if rect[1][0] < rect[1][1]:
+            mean_angle = mean_angle - 90
+
+        rotate_angl = angle - mean_angle
+
+        rotate_radians = rotate_angl * (math.pi / 180)
+        mean_moved_rotated = rotate_lmk(mean_moved, rotate_radians)
+    else:
+        mean_moved_rotated = mean_moved
     a, b, mean_covariances = create_pyramids_and_stuff(images, number_pyramids, lmks, k)
+    Z = fit_pyramid(mean_moved_rotated, test_img, m, mean_covariances, pc_modes, k, number_pyramids=number_pyramids)
+    cleanimage = np.zeros_like(original_test_image)
+    shape1 = cleanimage.copy()
+    shape2 = cleanimage.copy()
+    rrrZ = np.expand_dims(Z, axis=1).astype(int)
+    rrr_test_lmk = np.expand_dims(test_lmk, axis=1).astype(int)
+    cv2.drawContours(shape1, [rrrZ], 0, (100 ,0,0), cv2.FILLED)
+    cv2.drawContours(shape2, [rrr_test_lmk], 0, (200, 0, 0), cv2.FILLED)
+    shape1 = cv2.cvtColor(shape1 ,cv2.COLOR_RGB2GRAY)
+    shape2 = cv2.cvtColor(shape2 ,cv2.COLOR_RGB2GRAY)
+    unique, counts = np.unique(shape1, return_counts=True)
+    prediction = dict(zip(unique, counts))[30]
 
-    Z = fit_pyramid(test_estimate, test_img, m, mean_covariances, pc_modes, k, number_pyramids=number_pyramids)
-    draw_lmks_on_original([test_estimate, Z], original_test_image, [[0, 0, 255], [0, 255, 0]])
+    unique, counts = np.unique(shape2, return_counts=True)
+    truth = dict(zip(unique, counts))[60]
+
+    together = shape1 + shape2
+    unique, counts = np.unique(together, return_counts=True)
+    intersection = dict(zip(unique, counts))[90]
+    precision = intersection/prediction
+    recall = intersection/truth
+    F1 = 2 * (precision * recall)/(precision + recall)
+    return test_lmk, Z, F1, original_test_image
 
 
-
-def fit_pyramid(estimate, image, m, mean_covariances, pc_modes, k, number_pyramids=3):
+def fit_pyramid(estimate, image, m, mean_covariances, pc_modes, k, number_pyramids=1):
     pyramid = create_pyramid(image, number_pyramids)
-    #print('pyramid: {}'.format(pyramid[1].shape))
-    # print('estimate: {}'.format(estimate))
     lmk_pyramid = estimate.dot(1/2 ** (number_pyramids + 1))
-    # print('lmk_pyramid: {}'.format(lmk_pyramid))
-    print('len mean_covariances: {}'.format(len(mean_covariances)))
-    print('len pyramid: {}'.format(len(pyramid)))
     for img, mean_cov in zip(reversed(pyramid), reversed(mean_covariances)):
         print('running one fit')
-        # plt.imshow(img)
-        # plt.show()
-        # sys.exit(0)
         gimg = enhance_image(img)
         gimg = create_grayscaleimage(gimg)
-        # print(lmk_pyramid)
-        # draw_lmks_on_original([lmk_pyramid], img, [[255,255,255]])
-        # sys.exit(0)
         lmk_pyramid = lmk_pyramid.dot(2)
-        # print(lmk_pyramid)
-        # sys.exit(0)
         lmk_pyramid = fit_one(lmk_pyramid, img, gimg, m, pc_modes, mean_cov, k)
     return lmk_pyramid
 
@@ -464,18 +493,43 @@ def create_pyramid(image, levels):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-t', '--tooth', help='tooth number to predict', required=True, type=int)
+    parser.add_argument('-t', '--tooth', help='tooth number to predict', required=False, type=int, default=0)
     parser.add_argument('-r', '--rg', help='Radigraph to predict on', required=True, type=int)
     parser.add_argument('-g', '--rglocation', help='location of radigraphs', default='', type=str)
     parser.add_argument('-l', '--lmlocation', help='location of landmarks', default='', type=str)
     args = parser.parse_args()
 
-    if len(args.rglocation) > 0 and len(args.lmlocation)>0:
-        main(args.tooth, args.rg, lmk_location=args.lmlocation, rg_location=args.rglocation)
-    elif len(args.rglocation) > 0:
-        main(args.tooth, args.rg, rg_location=args.rglocation)
-    elif len(args.lmlocation) > 0:
-        main(args.tooth, args.rg, lmk_location=args.lmlocation)
-    else:
-        main(args.tooth, args.rg)
 
+    if args.tooth !=0:
+        if len(args.rglocation) > 0 and len(args.lmlocation)>0:
+            tlmk, Z, f1, otimg = main(args.tooth, args.rg, lmk_location=args.lmlocation, rg_location=args.rglocation)
+        elif len(args.rglocation) > 0:
+            tlmk, Z, f1, otimg = main(args.tooth, args.rg, rg_location=args.rglocation)
+        elif len(args.lmlocation) > 0:
+            tlmk, Z, f1, otimg = main(args.tooth, args.rg, lmk_location=args.lmlocation)
+        else:
+            tlmk, Z, f1, otimg = main(args.tooth, args.rg)
+        draw_lmks_on_original([tlmk, Z], otimg, [(255,0,0), (0,255,0)])
+    else:
+        testlmks = []
+        predlmks = []
+        f1s = []
+        for ttooth in [1,2,3,4,5,6,7,8]:
+            if len(args.rglocation) > 0 and len(args.lmlocation)>0:
+                tlmk, Z, f1, otimg = main(ttooth, args.rg, lmk_location=args.lmlocation, rg_location=args.rglocation)
+            elif len(args.rglocation) > 0:
+                tlmk, Z, f1, otimg = main(ttooth, args.rg, rg_location=args.rglocation)
+            elif len(args.lmlocation) > 0:
+                tlmk, Z, f1, otimg = main(ttooth, args.rg, lmk_location=args.lmlocation)
+            else:
+                tlmk, Z, f1, otimg = main(ttooth, args.rg)
+            testlmks.append(tlmk)
+            predlmks.append(Z)
+            f1s.append(f1)
+        with open('f1results.csv', 'a') as fw:
+            csvw = csv.writer(fw, delimiter=';')
+            for did in range(len(f1s)):
+                line = [args.rg, did + 1, f1s[did]]
+                csvw.writerow(line)
+        draw_lmks_on_original(testlmks + predlmks, otimg, [(255,0,0)] * len(testlmks) + [(0,255,0)] * len(predlmks),
+                              thickness=3, save=True, name='fitting_RG{}.png'.format(args.rg))

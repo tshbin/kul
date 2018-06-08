@@ -1,0 +1,17 @@
+Directory structure is important for this project, so should be kept intact.
+Training neural network model is very timeconsuming task. On GPU one model takes about 3.5 hours and we need 14 of them. Without GPU I'd expect it to be 3-5 times slower. Hence pretrained keras models are provided.
+However full code to generate data and train model is also provided.
+In addition pre-computed masks and test images are provided. Mainly because creating test images code is incorporated in create data code and that one is not optimized and takes quite a whilel to run.
+Creating PCA models also takes some time (though here we're talking about minutes), hence precalculated PCA models are provided too. If you wish to recompute them - PCA_MODELS_*.cpkl files should be removed.
+
+Current version of code works only on existing 14 images with landmarks. There was no strict requirement to adapt it to run on any image. While that is reatively easy, time constrains didn't allow to finish that part.
+There are 2 ways to run main function:
+
+python3 alltogether -t <Tooth number: 1-8> -r <Radiograph number: 1-14>
+This will predict one tooth on the specificed radiographs and show results together with ground truth. Ground truth being blue and predicted green line.
+
+python3 alltogether -r <Radiograph number: 1-14>
+This will predict all incisors for a given radiograph and create file fitting_RG<RG number>.png with results as well as f1results.csv with F1 results for revery incisors for that radiogrtaph in CSV format where columns are like this: 
+RG#;Incisor#;F1score
+
+For using predict_mask.py to create your own mask It is important that keras version is exactly 2.1.2 , otherwise model might fail to load cause model format was changed in the later versions

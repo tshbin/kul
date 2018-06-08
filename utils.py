@@ -6,7 +6,7 @@ from tqdm import tqdm
 import pickle
 
 
-def read_landmarks(tooth, rg_to_skip=None, lmks_dir='../Landmarks/original'):
+def read_landmarks(tooth, rg_to_skip=None, lmks_dir='./Landmarks/original'):
     remove_filename = []
     if rg_to_skip is not None:
         for ditem in rg_to_skip:
@@ -112,6 +112,14 @@ def scale_by_param(lmk, param):
     return (lmk - center).dot(param) + center
 
 
+def scale_by_param_wh(lmk, w, h):
+    center = np.mean(lmk, axis=0)
+    zcentered = lmk - center
+    zcentered[:,0] *= w
+    zcentered[:,1] *= h
+    return zcentered + center
+
+
 def scale_to_unit(lmk):
     """
     protocol 4, p2
@@ -125,6 +133,10 @@ def scale_to_unit(lmk):
 def get_center(lmk):
     return [lmk[:, 0].min() + (lmk[:, 0].max() - lmk[:, 0].min()) / 2,
             lmk[:, 1].min() + (lmk[:, 1].max() - lmk[:, 1].min()) / 2]
+
+def move_by_vec(lmk, vec):
+    lmk = lmk + vec
+    return lmk
 
 
 if __name__ == '__main__':

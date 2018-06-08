@@ -115,7 +115,7 @@ def plot_shapes(shapes, colors, title="Shape Model", save=False):
 
 
 
-def draw_lmks_on_original(lms_list, img, colors):
+def draw_lmks_on_original(lms_list, img, colors, save=False, name=None, thickness=1):
     img = img.copy()
 
 
@@ -124,11 +124,14 @@ def draw_lmks_on_original(lms_list, img, colors):
         for i in range(len(points)):
             cv2.line(img, (int(points[i, 0]), int(points[i, 1])),
                      (int(points[(i + 1)%40, 0]), int(points[(i + 1)%40, 1])),
-                     colors[ind])
+                     colors[ind], thickness)
 
 
     img = fit_to_screen(img)
-    cv2.imshow('landmarks on image', img)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    if save:
+        cv2.imwrite(name, img)
+    else:
+        cv2.imshow('landmarks on image', img)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
 
